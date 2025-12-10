@@ -7,10 +7,9 @@ import net.fabricmc.loader.api.entrypoint.PreLaunchEntrypoint;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import savage.dbwrapper.config.DBWrapperConfig;
-import savage.dbwrapper.config.DatabaseConfig;
-import savage.dbwrapper.config.InstallationProgress;
 import savage.dbwrapper.database.DatabaseManager;
 import savage.dbwrapper.database.mariadb.MariaDBManager;
+import savage.dbwrapper.database.redis.RedisManager;
 import savage.dbwrapper.utils.ConfigLoader;
 
 import java.nio.file.Path;
@@ -25,12 +24,8 @@ public class DBWrapper implements ModInitializer, PreLaunchEntrypoint {
 
 	private static DatabaseManager databaseManager;
 	private static DBWrapperConfig config;
-	private static DatabaseConfig databaseConfig;
-	private static InstallationProgress installationProgress;
 	private static final Path CONFIG_DIRECTORY = FabricLoader.getInstance().getConfigDir().resolve(MOD_ID);
 	private static final Path CONFIG_FILE = CONFIG_DIRECTORY.resolve("config.json");
-	private static final Path DB_CONFIG_FILE = CONFIG_DIRECTORY.resolve("database.json");
-	private static final Path INSTALLATION_FILE = CONFIG_DIRECTORY.resolve("installation.json");
 	private static boolean shutdownHookRegistered = false;
 
 	@Override
@@ -45,10 +40,9 @@ public class DBWrapper implements ModInitializer, PreLaunchEntrypoint {
 		loadConfiguration();
 
 		// Initialize database manager based on config
-		if (config.isEnableMariaDB()) {
+		if (config.getMariadb().isEnabled()) {
 			databaseManager = new MariaDBManager();
-			((MariaDBManager) databaseManager).setDatabaseConfig(databaseConfig);
-			((MariaDBManager) databaseManager).setInstallationProgress(installationProgress);
+			((MariaDBManager) databaseManager).setConfig(config);
 			databaseManager.initialize();
 
 			// Register shutdown hook for proper cleanup
@@ -71,6 +65,20 @@ public class DBWrapper implements ModInitializer, PreLaunchEntrypoint {
 			}
 		}
 
+		if (config.getRedis().isEnabled()) {
+			// Create separate Redis manager
+			RedisManager redisManager = new RedisManager();
+			redisManager.setConfig(config);
+			redisManager.initialize();
+
+			// Start Redis if auto-start is enabled
+			if (config.isAutoStart()) {
+				LOGGER.info("Starting Redis database...");
+				redisManager.installDatabase();
+				redisManager.startDatabase();
+			}
+		}
+
 		// Register server lifecycle events
 		registerServerEvents();
 	}
@@ -86,23 +94,13 @@ public class DBWrapper implements ModInitializer, PreLaunchEntrypoint {
 			// Load main config
 			config = ConfigLoader.loadConfig(CONFIG_FILE, DBWrapperConfig.class);
 
-			// Load database config
-			databaseConfig = ConfigLoader.loadConfig(DB_CONFIG_FILE, DatabaseConfig.class);
-
-			// Load installation progress
-			installationProgress = ConfigLoader.loadConfig(INSTALLATION_FILE, InstallationProgress.class);
-
-			LOGGER.info("Configuration loaded: MariaDB enabled = {}, auto start = {}, port = {}",
-					config.isEnableMariaDB(), config.isAutoStart(), databaseConfig.getPort());
+			LOGGER.info("Configuration loaded: MariaDB enabled = {}, Redis enabled = {}, auto start = {}",
+			        config.getMariadb().isEnabled(), config.getRedis().isEnabled(), config.isAutoStart());
+			LOGGER.info("DBWrapper configuration: mariadb.port={}, redis.port={}",
+			        config.getMariadb().getPort(), config.getRedis().getPort());
 		} catch (Exception e) {
 			LOGGER.error("Failed to load configuration, using defaults", e);
 			config = new DBWrapperConfig();
-			config.setEnableMariaDB(true); // Enable MariaDB by default for now
-			config.setAutoStart(true);
-			config.setDatabasePort(3307);
-
-			databaseConfig = new DatabaseConfig();
-			installationProgress = new InstallationProgress();
 		}
 	}
 
@@ -112,11 +110,9 @@ public class DBWrapper implements ModInitializer, PreLaunchEntrypoint {
 			return;
 		}
 
-		// Check if database is installed
-		if (!databaseManager.getInstallationProgress().isDatabaseInstalled()) {
-			LOGGER.info("Installing database...");
-			databaseManager.installDatabase();
-		}
+		// Install database if needed
+		LOGGER.info("Installing database...");
+		databaseManager.installDatabase();
 
 		// Start database if not running
 		if (!databaseManager.isDatabaseRunning()) {

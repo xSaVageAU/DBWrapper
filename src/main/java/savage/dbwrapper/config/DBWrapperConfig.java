@@ -3,33 +3,17 @@ package savage.dbwrapper.config;
 import com.google.gson.annotations.SerializedName;
 
 public class DBWrapperConfig {
-    @SerializedName("enable_mariadb")
-    private boolean enableMariaDB = false;
-
-    @SerializedName("database_port")
-    private int databasePort = 3307;
-
     @SerializedName("auto_start")
     private boolean autoStart = true;
 
     @SerializedName("debug_logging")
     private boolean debugLogging = false;
 
-    public boolean isEnableMariaDB() {
-        return enableMariaDB;
-    }
+    @SerializedName("mariadb")
+    private MariaDBConfig mariadb = new MariaDBConfig();
 
-    public void setEnableMariaDB(boolean enableMariaDB) {
-        this.enableMariaDB = enableMariaDB;
-    }
-
-    public int getDatabasePort() {
-        return databasePort;
-    }
-
-    public void setDatabasePort(int databasePort) {
-        this.databasePort = databasePort;
-    }
+    @SerializedName("redis")
+    private RedisConfig redis = new RedisConfig();
 
     public boolean isAutoStart() {
         return autoStart;
@@ -45,5 +29,102 @@ public class DBWrapperConfig {
 
     public void setDebugLogging(boolean debugLogging) {
         this.debugLogging = debugLogging;
+    }
+
+    public MariaDBConfig getMariadb() {
+        return mariadb;
+    }
+
+    public void setMariadb(MariaDBConfig mariadb) {
+        this.mariadb = mariadb;
+    }
+
+    public RedisConfig getRedis() {
+        return redis;
+    }
+
+    public void setRedis(RedisConfig redis) {
+        this.redis = redis;
+    }
+
+    public static class MariaDBConfig {
+        @SerializedName("enabled")
+        private boolean enabled = true;
+
+        @SerializedName("port")
+        private int port = 3307;
+
+        @SerializedName("username")
+        private String username = "root";
+
+        @SerializedName("password")
+        private String password = "password";
+
+        @SerializedName("database_name")
+        private String databaseName = "minecraft";
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getPort() {
+            return port;
+        }
+
+        public void setPort(int port) {
+            this.port = port;
+        }
+
+        public String getUsername() {
+            return username;
+        }
+
+        public void setUsername(String username) {
+            this.username = username;
+        }
+
+        public String getPassword() {
+            return password;
+        }
+
+        public void setPassword(String password) {
+            this.password = password;
+        }
+
+        public String getDatabaseName() {
+            return databaseName;
+        }
+
+        public void setDatabaseName(String databaseName) {
+            this.databaseName = databaseName;
+        }
+    }
+
+    public static class RedisConfig {
+        @SerializedName("enabled")
+        private boolean enabled = false;
+
+        @SerializedName("port")
+        private int port = 6379;
+
+        public boolean isEnabled() {
+            return enabled;
+        }
+
+        public void setEnabled(boolean enabled) {
+            this.enabled = enabled;
+        }
+
+        public int getPort() {
+            return port;
+        }
+
+        public void setPort(int port) {
+            this.port = port;
+        }
     }
 }

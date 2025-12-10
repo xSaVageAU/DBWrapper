@@ -5,7 +5,7 @@ A Minecraft Fabric mod that provides a wrapper for running and managing embedded
 ## Features
 
 - **Embedded Database Binaries**: Automatically extracts and manages database server binaries for different operating systems
-- **Cross-Platform Support**: Supports Windows, Linux, and macOS
+- **Cross-Platform Support**: Supports Windows, and planned support for Linux and macOS
 - **Process Management**: Handles database server lifecycle, startup, and shutdown integrated with Minecraft server events
 - **Configuration System**: JSON-based configuration for database settings and mod preferences
 - **Automatic Setup**: One-click database installation and configuration

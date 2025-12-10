@@ -3,8 +3,7 @@ package savage.dbwrapper.database.mariadb;
 import net.fabricmc.loader.api.FabricLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import savage.dbwrapper.config.DatabaseConfig;
-import savage.dbwrapper.config.InstallationProgress;
+import savage.dbwrapper.config.DBWrapperConfig;
 import savage.dbwrapper.database.DatabaseManager;
 import savage.dbwrapper.utils.OSUtils;
 import savage.dbwrapper.utils.ProcessUtils;
@@ -18,8 +17,7 @@ import java.util.concurrent.TimeUnit;
 public class MariaDBManager implements DatabaseManager {
     private static final Logger LOGGER = LoggerFactory.getLogger(MariaDBManager.class);
 
-    private DatabaseConfig databaseConfig;
-    private InstallationProgress installationProgress;
+    private DBWrapperConfig config;
     private final Path configDirectory;
     private final Path mariaDBDirectory;
     private final Path binDirectory;
@@ -32,18 +30,10 @@ public class MariaDBManager implements DatabaseManager {
         this.mariaDBDirectory = configDirectory.resolve("mariadb");
         this.binDirectory = mariaDBDirectory.resolve("bin");
         this.dataDirectory = mariaDBDirectory.resolve("data");
-
-        // These will be set by the main DBWrapper class
-        this.databaseConfig = new DatabaseConfig();
-        this.installationProgress = new InstallationProgress();
     }
 
-    public void setDatabaseConfig(DatabaseConfig databaseConfig) {
-        this.databaseConfig = databaseConfig;
-    }
-
-    public void setInstallationProgress(InstallationProgress installationProgress) {
-        this.installationProgress = installationProgress;
+    public void setConfig(DBWrapperConfig config) {
+        this.config = config;
     }
 
     @Override
@@ -63,11 +53,6 @@ public class MariaDBManager implements DatabaseManager {
 
     @Override
     public void installDatabase() {
-        if (installationProgress.isDatabaseInstalled()) {
-            LOGGER.info("MariaDB is already installed (according to installation progress)");
-            return;
-        }
-
         try {
             // Check if database files already exist (indicating previous installation)
             // Check both the actual data directory and the expected path that mariadb-install-db creates
@@ -80,7 +65,6 @@ public class MariaDBManager implements DatabaseManager {
 
             if (databaseAlreadyExists) {
                 LOGGER.info("MariaDB data files already exist - skipping installation");
-                installationProgress.setDatabaseInstalled(true);
                 return;
             }
 
@@ -106,7 +90,6 @@ public class MariaDBManager implements DatabaseManager {
             // Run installation command
             runInstallationCommand();
 
-            installationProgress.setDatabaseInstalled(true);
             LOGGER.info("MariaDB installed successfully");
         } catch (Exception e) {
             LOGGER.error("Failed to install MariaDB", e);
@@ -115,21 +98,11 @@ public class MariaDBManager implements DatabaseManager {
 
     @Override
     public void startDatabase() {
-        if (installationProgress.isDatabaseStarted()) {
-            LOGGER.info("MariaDB is already running");
-            return;
-        }
-
-        if (!installationProgress.isDatabaseInstalled()) {
-            LOGGER.error("Cannot start MariaDB - not installed");
-            return;
-        }
-
         try {
             ProcessBuilder processBuilder = new ProcessBuilder(
                 binDirectory.resolve("mysqld" + OSUtils.getBinarySuffix()).toString(),
                 "--console",
-                "--port=" + databaseConfig.getPort(),
+                "--port=" + config.getMariadb().getPort(),
                 "--datadir=" + dataDirectory.toString()
             );
 
@@ -141,8 +114,7 @@ public class MariaDBManager implements DatabaseManager {
 
             // MariaDB is a long-running process, so we can't wait for it to complete
             // Instead, we'll consider it started immediately and let it run
-            installationProgress.setDatabaseStarted(true);
-            LOGGER.info("MariaDB started successfully");
+            LOGGER.info("MariaDB started successfully on port {}", config.getMariadb().getPort());
         } catch (IOException e) {
             LOGGER.error("Failed to start MariaDB", e);
         }
@@ -150,18 +122,13 @@ public class MariaDBManager implements DatabaseManager {
 
     @Override
     public void stopDatabase() {
-        if (!installationProgress.isDatabaseStarted()) {
-            LOGGER.info("MariaDB is not running");
-            return;
-        }
-
         try {
             ProcessBuilder processBuilder = new ProcessBuilder(
                 binDirectory.resolve("mysqladmin" + OSUtils.getBinarySuffix()).toString(),
                 "shutdown",
-                "--user=" + databaseConfig.getUsername(),
-                "--password=" + databaseConfig.getPassword(),
-                "--port=" + databaseConfig.getPort()
+                "--user=" + config.getMariadb().getUsername(),
+                "--password=" + config.getMariadb().getPassword(),
+                "--port=" + config.getMariadb().getPort()
             );
 
             processBuilder.directory(binDirectory.toFile());
@@ -169,7 +136,6 @@ public class MariaDBManager implements DatabaseManager {
 
             // Wait for shutdown to complete
             if (shutdownProcess.waitFor(10, TimeUnit.SECONDS)) {
-                installationProgress.setDatabaseStarted(false);
                 LOGGER.info("MariaDB stopped successfully");
             } else {
                 LOGGER.error("MariaDB shutdown timed out");
@@ -205,7 +171,8 @@ public class MariaDBManager implements DatabaseManager {
     }
 
     private void copyBinaryFromResources() throws IOException {
-        if (installationProgress.isBinaryCopied()) {
+        // Check if binary already exists
+        if (Files.exists(binDirectory.resolve("mysqld" + OSUtils.getBinarySuffix()))) {
             LOGGER.info("MariaDB binary already copied");
             return;
         }
@@ -239,8 +206,6 @@ public class MariaDBManager implements DatabaseManager {
                     }
                 }
             }
-            installationProgress.setBinaryCopied(true);
-            installationProgress.setBinaryExtracted(true);
             LOGGER.info("MariaDB binary copied and extracted successfully");
         } catch (Exception e) {
             LOGGER.error("Failed to extract MariaDB binary", e);
@@ -252,7 +217,7 @@ public class MariaDBManager implements DatabaseManager {
         ProcessBuilder processBuilder = new ProcessBuilder(
             binDirectory.resolve("mariadb-install-db" + OSUtils.getBinarySuffix()).toString(),
             "--datadir=" + dataDirectory.toString(),
-            "--password=" + databaseConfig.getPassword()
+            "--password=" + config.getMariadb().getPassword()
         );
 
         processBuilder.directory(binDirectory.toFile());
@@ -277,16 +242,6 @@ public class MariaDBManager implements DatabaseManager {
     private String getMariaDBVersion() {
         // TODO: Make this configurable
         return "12.1.2";
-    }
-
-    @Override
-    public DatabaseConfig getDatabaseConfig() {
-        return databaseConfig;
-    }
-
-    @Override
-    public InstallationProgress getInstallationProgress() {
-        return installationProgress;
     }
 
     @Override
