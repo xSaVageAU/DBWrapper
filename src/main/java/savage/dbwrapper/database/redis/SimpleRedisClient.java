@@ -33,6 +33,15 @@ public class SimpleRedisClient implements AutoCloseable {
         LOGGER.info("Connected to Redis server at {}:{}", host, port);
     }
 
+    public void auth(String password) throws IOException {
+        sendCommand("AUTH", password);
+        String response = readSimpleString();
+        if (!"OK".equals(response)) {
+            throw new IOException("Authentication failed: " + response);
+        }
+        LOGGER.info("Authenticated with Redis server");
+    }
+
     public String ping() throws IOException {
         sendCommand("PING");
         return readSimpleString();

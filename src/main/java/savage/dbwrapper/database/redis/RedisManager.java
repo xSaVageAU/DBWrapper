@@ -80,12 +80,17 @@ public class RedisManager implements DatabaseManager {
             LOGGER.info("Starting Redis server on port {}", config.getRedis().getPort());
 
             // Start simple Redis server
-            simpleRedisServer = new SimpleRedisServer(config.getRedis().getPort(), dataDirectory);
+            simpleRedisServer = new SimpleRedisServer(config.getRedis().getPort(), config.getRedis().getPassword(), dataDirectory);
             simpleRedisServer.start();
 
             // Create client connection
             simpleRedisClient = new SimpleRedisClient("localhost", config.getRedis().getPort());
             simpleRedisClient.connect();
+
+            // Authenticate if password is set
+            if (config.getRedis().hasPassword()) {
+                simpleRedisClient.auth(config.getRedis().getPassword());
+            }
 
             // Test connection
             String pingResponse = simpleRedisClient.ping();

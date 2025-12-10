@@ -111,6 +111,9 @@ public class DBWrapperConfig {
         @SerializedName("port")
         private int port = 6379;
 
+        @SerializedName("password")
+        private String password = "";
+
         public boolean isEnabled() {
             return enabled;
         }
@@ -125,6 +128,18 @@ public class DBWrapperConfig {
 
         public void setPort(int port) {
             this.port = port;
+        }
+
+        public String getPassword() {
+            return password;
+        }
+
+        public void setPassword(String password) {
+            this.password = password;
+        }
+
+        public boolean hasPassword() {
+            return password != null && !password.trim().isEmpty();
         }
     }
 }

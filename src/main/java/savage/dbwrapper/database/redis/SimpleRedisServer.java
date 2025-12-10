@@ -20,6 +20,7 @@ public class SimpleRedisServer {
     private static final Logger LOGGER = LoggerFactory.getLogger(SimpleRedisServer.class);
 
     private final int port;
+    private final String password;
     private final Path dataDirectory;
     private ServerSocket serverSocket;
     private ExecutorService executorService;
@@ -29,11 +30,29 @@ public class SimpleRedisServer {
     private final Map<String, String> dataStore = new HashMap<>();
     private final Map<String, Long> expirationTimes = new HashMap<>();
 
-    // Pub/Sub support - simplified for basic compatibility
-    private final Map<String, List<PrintWriter>> channelSubscriptions = new ConcurrentHashMap<>();
+    // Pub/Sub support
+    private final Map<String, List<ClientConnection>> channelSubscriptions = new ConcurrentHashMap<>();
+    private final Map<String, ClientConnection> clientConnections = new ConcurrentHashMap<>();
 
-    public SimpleRedisServer(int port, Path dataDirectory) {
+    // Authentication support
+    private final Set<String> authenticatedClients = ConcurrentHashMap.newKeySet();
+    private int clientCounter = 0;
+
+    // Inner class to track client connections
+    private static class ClientConnection {
+        final String clientId;
+        final BufferedWriter writer;
+        final Set<String> subscriptions = new HashSet<>();
+
+        ClientConnection(String clientId, BufferedWriter writer) {
+            this.clientId = clientId;
+            this.writer = writer;
+        }
+    }
+
+    public SimpleRedisServer(int port, String password, Path dataDirectory) {
         this.port = port;
+        this.password = password;
         this.dataDirectory = dataDirectory;
     }
 
@@ -53,7 +72,8 @@ public class SimpleRedisServer {
             while (running) {
                 try {
                     Socket clientSocket = serverSocket.accept();
-                    executorService.submit(() -> handleClient(clientSocket));
+                    String clientId = "client-" + (++clientCounter);
+                    executorService.submit(() -> handleClient(clientSocket, clientId));
                 } catch (IOException e) {
                     if (running) {
                         LOGGER.error("Error accepting client connection", e);
@@ -67,9 +87,19 @@ public class SimpleRedisServer {
         }
     }
 
-    private void handleClient(Socket socket) {
+    private void handleClient(Socket socket, String clientId) {
+        ClientConnection clientConn;
+        try {
+            clientConn = new ClientConnection(clientId,
+                new BufferedWriter(new OutputStreamWriter(socket.getOutputStream())));
+            clientConnections.put(clientId, clientConn);
+        } catch (IOException e) {
+            LOGGER.error("Failed to create client connection for {}", clientId, e);
+            return;
+        }
+
         try (BufferedReader reader = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-             BufferedWriter writer = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()))) {
+              BufferedWriter writer = clientConn.writer) {
 
             while (running) {
                 String line = reader.readLine();
@@ -94,13 +124,20 @@ public class SimpleRedisServer {
                     }
 
                     if (commands.length > 0 && commands[0] != null) {
-                        handleCommand(commands, writer);
+                        handleCommand(commands, writer, clientId);
                     }
                 }
             }
         } catch (Exception e) {
             LOGGER.error("Error handling client", e);
         } finally {
+            // Clean up client connection
+            clientConnections.remove(clientId);
+            // Remove from all channel subscriptions
+            for (List<ClientConnection> subscribers : channelSubscriptions.values()) {
+                subscribers.remove(clientConn);
+            }
+
             try {
                 socket.close();
             } catch (IOException e) {
@@ -109,11 +146,38 @@ public class SimpleRedisServer {
         }
     }
 
-    private void handleCommand(String[] commands, BufferedWriter writer) throws IOException {
+    private void handleCommand(String[] commands, BufferedWriter writer, String clientId) throws IOException {
         String command = commands[0].toUpperCase();
+
+        // Check authentication for commands that require it
+        boolean requiresAuth = !command.equals("AUTH") && !command.equals("PING") && !command.equals("QUIT");
+        if (requiresAuth && password != null && !password.trim().isEmpty() && !authenticatedClients.contains(clientId)) {
+            writer.write("-NOAUTH Authentication required.\r\n");
+            writer.flush();
+            return;
+        }
 
         try {
             switch (command) {
+                case "AUTH":
+                    if (commands.length >= 2) {
+                        String providedPassword = commands[1];
+                        if (password == null || password.trim().isEmpty() || password.equals(providedPassword)) {
+                            authenticatedClients.add(clientId);
+                            writer.write("+OK\r\n");
+                            writer.flush();
+                            LOGGER.info("Client {} authenticated successfully", clientId);
+                        } else {
+                            writer.write("-ERR invalid password\r\n");
+                            writer.flush();
+                            LOGGER.warn("Client {} provided invalid password", clientId);
+                        }
+                    } else {
+                        writer.write("-ERR wrong number of arguments for 'auth' command\r\n");
+                        writer.flush();
+                    }
+                    break;
+
                 case "PING":
                     writer.write("+PONG\r\n");
                     writer.flush();
@@ -213,9 +277,15 @@ public class SimpleRedisServer {
                     break;
 
                 case "SUBSCRIBE":
-                    // Basic SUBSCRIBE support - just acknowledge the subscription
                     if (commands.length >= 2) {
                         String channel = commands[1];
+                        ClientConnection clientConn = clientConnections.get(clientId);
+
+                        // Add to channel subscriptions
+                        channelSubscriptions.computeIfAbsent(channel, k -> new ArrayList<>()).add(clientConn);
+                        clientConn.subscriptions.add(channel);
+
+                        // Send subscription confirmation
                         writer.write("*3\r\n");
                         writer.write("$9\r\n");
                         writer.write("subscribe\r\n");
@@ -223,7 +293,7 @@ public class SimpleRedisServer {
                         writer.write(channel + "\r\n");
                         writer.write(":1\r\n"); // Number of subscriptions
                         writer.flush();
-                        LOGGER.info("Client subscribed to channel: {}", channel);
+                        LOGGER.info("Client {} subscribed to channel: {}", clientId, channel);
                     } else {
                         writer.write("-ERR wrong number of arguments for 'subscribe' command\r\n");
                         writer.flush();
@@ -231,13 +301,40 @@ public class SimpleRedisServer {
                     break;
 
                 case "PUBLISH":
-                    // Basic PUBLISH support - acknowledge but don't actually publish
                     if (commands.length >= 3) {
                         String channel = commands[1];
                         String message = commands[2];
-                        writer.write(":0\r\n"); // Number of clients that received the message
+
+                        // Get subscribers for this channel
+                        List<ClientConnection> subscribers = channelSubscriptions.get(channel);
+                        int recipientCount = 0;
+
+                        if (subscribers != null) {
+                            // Send message to all subscribers
+                            for (ClientConnection subscriber : subscribers) {
+                                try {
+                                    // Send Redis pub/sub message format: *3\r\n$7\r\nmessage\r\n$[channel_len]\r\n[channel]\r\n$[message_len]\r\n[message]\r\n
+                                    subscriber.writer.write("*3\r\n");
+                                    subscriber.writer.write("$7\r\n");
+                                    subscriber.writer.write("message\r\n");
+                                    subscriber.writer.write("$" + channel.length() + "\r\n");
+                                    subscriber.writer.write(channel + "\r\n");
+                                    subscriber.writer.write("$" + message.length() + "\r\n");
+                                    subscriber.writer.write(message + "\r\n");
+                                    subscriber.writer.flush();
+                                    recipientCount++;
+                                } catch (IOException e) {
+                                    LOGGER.warn("Failed to send message to subscriber {}, removing from subscriptions", subscriber.clientId);
+                                    // Remove failed subscriber
+                                    subscribers.remove(subscriber);
+                                }
+                            }
+                        }
+
+                        // Respond with number of recipients
+                        writer.write(":" + recipientCount + "\r\n");
                         writer.flush();
-                        LOGGER.info("Published message to channel {}: {}", channel, message);
+                        LOGGER.info("Published message to channel {}: {} (sent to {} clients)", channel, message, recipientCount);
                     } else {
                         writer.write("-ERR wrong number of arguments for 'publish' command\r\n");
                         writer.flush();
@@ -245,14 +342,50 @@ public class SimpleRedisServer {
                     break;
 
                 case "UNSUBSCRIBE":
-                    // Basic UNSUBSCRIBE support
-                    writer.write("*3\r\n");
-                    writer.write("$11\r\n");
-                    writer.write("unsubscribe\r\n");
-                    writer.write("$0\r\n");
-                    writer.write("\r\n");
-                    writer.write(":0\r\n"); // Number of remaining subscriptions
-                    writer.flush();
+                    ClientConnection clientConn = clientConnections.get(clientId);
+                    if (commands.length >= 2) {
+                        // Unsubscribe from specific channel
+                        String channel = commands[1];
+                        List<ClientConnection> subscribers = channelSubscriptions.get(channel);
+                        if (subscribers != null) {
+                            subscribers.remove(clientConn);
+                            if (subscribers.isEmpty()) {
+                                channelSubscriptions.remove(channel);
+                            }
+                        }
+                        clientConn.subscriptions.remove(channel);
+
+                        writer.write("*3\r\n");
+                        writer.write("$11\r\n");
+                        writer.write("unsubscribe\r\n");
+                        writer.write("$" + channel.length() + "\r\n");
+                        writer.write(channel + "\r\n");
+                        writer.write(":" + clientConn.subscriptions.size() + "\r\n"); // Remaining subscriptions
+                        writer.flush();
+                        LOGGER.info("Client {} unsubscribed from channel: {}", clientId, channel);
+                    } else {
+                        // Unsubscribe from all channels
+                        for (String channel : new HashSet<>(clientConn.subscriptions)) {
+                            List<ClientConnection> subscribers = channelSubscriptions.get(channel);
+                            if (subscribers != null) {
+                                subscribers.remove(clientConn);
+                                if (subscribers.isEmpty()) {
+                                    channelSubscriptions.remove(channel);
+                                }
+                            }
+                        }
+                        int remainingSubs = clientConn.subscriptions.size();
+                        clientConn.subscriptions.clear();
+
+                        writer.write("*3\r\n");
+                        writer.write("$11\r\n");
+                        writer.write("unsubscribe\r\n");
+                        writer.write("$0\r\n");
+                        writer.write("\r\n");
+                        writer.write(":" + remainingSubs + "\r\n");
+                        writer.flush();
+                        LOGGER.info("Client {} unsubscribed from all channels", clientId);
+                    }
                     break;
 
                 default:
