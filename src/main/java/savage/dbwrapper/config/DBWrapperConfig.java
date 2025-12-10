@@ -58,7 +58,7 @@ public class DBWrapperConfig {
         private String username = "root";
 
         @SerializedName("password")
-        private String password = "password";
+        private String password = "";
 
         @SerializedName("database_name")
         private String databaseName = "minecraft";

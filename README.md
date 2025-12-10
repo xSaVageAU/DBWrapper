@@ -14,7 +14,7 @@ A Minecraft Fabric mod that provides a wrapper for running and managing embedded
 
 - **MariaDB** (Primary implementation)
 - **PostgreSQL** (Planned)
-- **Redis** (Planned)
+- **Redis** (Supported, but disabled by default)
 
 ## Installation
 
@@ -25,11 +25,9 @@ A Minecraft Fabric mod that provides a wrapper for running and managing embedded
 
 ## Configuration
 
-The mod generates configuration files in the `config/dbwrapper` directory:
+The mod generates a configuration file in the `config/dbwrapper` directory:
 
-- `dbwrapper.json` - Main mod configuration (enable/disable databases, auto-start, etc.)
-- `database.json` - Database-specific settings (port, credentials, etc.)
-- `installation.json` - Installation progress tracking
+- `config.json` - Main mod configuration (enable/disable databases, auto-start, etc.)
 
 ## How It Works
 
