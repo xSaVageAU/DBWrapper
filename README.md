@@ -1,14 +1,14 @@
 # DBWrapper
 
-A Minecraft Fabric mod that simplifies running remote databases like MariaDB, PostgreSQL, and Redis for Minecraft servers. This mod acts as a wrapper that manages database server binaries and processes, making it easy to integrate database functionality into Minecraft mods.
+A Minecraft Fabric mod that provides a wrapper for running and managing embedded database service processes within Minecraft servers. This mod handles the extraction, installation, and lifecycle management of database binaries (like MariaDB), allowing other mods to connect to and use databases through standard database protocols.
 
 ## Features
 
-- **Embedded Database Binaries**: Automatically manages database server binaries for different operating systems
+- **Embedded Database Binaries**: Automatically extracts and manages database server binaries for different operating systems
 - **Cross-Platform Support**: Supports Windows, Linux, and macOS
-- **Process Management**: Handles database server lifecycle, startup, and shutdown
-- **Configuration System**: JSON-based configuration for database settings
-- **Modular Design**: Extensible architecture for adding new database types
+- **Process Management**: Handles database server lifecycle, startup, and shutdown integrated with Minecraft server events
+- **Configuration System**: JSON-based configuration for database settings and mod preferences
+- **Automatic Setup**: One-click database installation and configuration
 
 ## Supported Databases
 
@@ -21,28 +21,23 @@ A Minecraft Fabric mod that simplifies running remote databases like MariaDB, Po
 1. Download the mod JAR file
 2. Place it in your Minecraft server's `mods` folder
 3. Start the server - the mod will automatically extract and configure the database binaries
-4. Configure database settings in the generated config files
+4. Configure database settings in the generated config files if needed
 
 ## Configuration
 
 The mod generates configuration files in the `config/dbwrapper` directory:
 
-- `dbwrapper.json` - Main mod configuration
-- `database.json` - Database-specific settings
+- `dbwrapper.json` - Main mod configuration (enable/disable databases, auto-start, etc.)
+- `database.json` - Database-specific settings (port, credentials, etc.)
+- `installation.json` - Installation progress tracking
 
-## Usage
+## How It Works
 
-The mod provides a simple API for other mods to interact with databases:
+This mod runs database servers as separate processes alongside your Minecraft server. Other mods can connect to these databases using standard database clients and protocols:
 
-```java
-// Get database manager instance
-DatabaseManager dbManager = DBWrapper.getDatabaseManager();
-
-// Check if database is running
-if (dbManager.isRunning()) {
-    // Database is ready for connections
-}
-```
+- Connect to MariaDB using JDBC or MySQL clients on the configured port
+- Use standard SQL queries and database operations
+- The mod handles the underlying process management automatically
 
 ## Development
 
@@ -63,16 +58,6 @@ if (dbManager.isRunning()) {
 ```bash
 ./gradlew test
 ```
-
-## Architecture
-
-The mod uses a modular architecture:
-
-- **DatabaseManager**: Abstract interface for database operations
-- **MariaDBManager**: MariaDB-specific implementation
-- **ProcessUtils**: Cross-platform process management
-- **OSUtils**: Operating system detection utilities
-- **ConfigLoader**: JSON configuration management
 
 ## License
 
