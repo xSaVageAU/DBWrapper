@@ -33,6 +33,7 @@ public class SimpleRedisServer {
     private final Map<String, Long> expirationTimes = new ConcurrentHashMap<>();
 
     // Pub/Sub support
+    // Use CopyOnWriteArrayList for thread-safe iteration during PUBLISH
     private final Map<String, List<ClientConnection>> channelSubscriptions = new ConcurrentHashMap<>();
     private final Map<String, ClientConnection> clientConnections = new ConcurrentHashMap<>();
 
@@ -103,7 +104,10 @@ public class SimpleRedisServer {
             while (running) {
                 try {
                     Socket clientSocket = serverSocket.accept();
+                    clientSocket.setKeepAlive(true); // Detect broken connections
                     String clientId = "client-" + (++clientCounter);
+                    
+                    LOGGER.info("Accepted connection from {} (ID: {})", clientSocket.getRemoteSocketAddress(), clientId);
                     
                     try {
                         executorService.submit(() -> handleClient(clientSocket, clientId));
@@ -130,6 +134,7 @@ public class SimpleRedisServer {
             clientConn = new ClientConnection(clientId,
                 new BufferedWriter(new OutputStreamWriter(socket.getOutputStream())));
             clientConnections.put(clientId, clientConn);
+            LOGGER.info("Client connected: {}. Active connections: {}", clientId, clientConnections.size());
         } catch (IOException e) {
             LOGGER.error("Failed to create client connection for {}", clientId, e);
             return;
@@ -182,6 +187,7 @@ public class SimpleRedisServer {
             } catch (IOException e) {
                 LOGGER.error("Error closing socket", e);
             }
+            LOGGER.info("Client disconnected: {}. Active connections: {}", clientId, clientConnections.size());
         }
     }
 
@@ -353,7 +359,7 @@ public class SimpleRedisServer {
                         ClientConnection clientConn = clientConnections.get(clientId);
 
                         // Add to channel subscriptions
-                        channelSubscriptions.computeIfAbsent(channel, k -> new ArrayList<>()).add(clientConn);
+                        channelSubscriptions.computeIfAbsent(channel, k -> new CopyOnWriteArrayList<>()).add(clientConn);
                         clientConn.subscriptions.add(channel);
 
                         // Send subscription confirmation
@@ -382,7 +388,8 @@ public class SimpleRedisServer {
 
                         if (subscribers != null) {
                             // Send message to all subscribers
-                            for (ClientConnection subscriber : new ArrayList<>(subscribers)) {
+                            // CopyOnWriteArrayList allows safe iteration without copying
+                            for (ClientConnection subscriber : subscribers) {
                                 try {
                                     subscriber.writer.write("*3\r\n");
                                     subscriber.writer.write("$7\r\n");
