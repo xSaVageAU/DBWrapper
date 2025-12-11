@@ -47,8 +47,13 @@ public class OSUtils {
     public static String getBinarySuffix() {
         if (isWindows()) {
             return ".exe";
-        } else {
-            return "";
+        } else if (isLinux()) {
+            return ""; // Linux binaries have no extension usually
         }
+        return "";
+    }
+
+    public static String getExecutableName(String baseName) {
+        return baseName + getBinarySuffix();
     }
 }

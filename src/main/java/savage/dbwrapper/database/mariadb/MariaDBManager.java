@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import savage.dbwrapper.config.DBWrapperConfig;
 import savage.dbwrapper.database.DatabaseManager;
+import savage.dbwrapper.utils.BinaryManager;
 import savage.dbwrapper.utils.OSUtils;
 import savage.dbwrapper.utils.ProcessUtils;
 
@@ -12,6 +13,8 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 public class MariaDBManager implements DatabaseManager {
@@ -53,63 +56,123 @@ public class MariaDBManager implements DatabaseManager {
 
     @Override
     public void installDatabase() {
+        // Delegate to BinaryManager for download/extraction
         try {
-            // Check if database files already exist (indicating previous installation)
-            // Check both the actual data directory and the expected path that mariadb-install-db creates
-            boolean databaseAlreadyExists = Files.exists(dataDirectory.resolve("ibdata1")) ||
-                                          Files.exists(dataDirectory.resolve("mysql")) ||
-                                          Files.exists(dataDirectory.resolve("performance_schema")) ||
-                                          Files.exists(binDirectory.resolve(dataDirectory.toString().replace(":", "")).resolve("ibdata1")) ||
-                                          Files.exists(binDirectory.resolve(dataDirectory.toString().replace(":", "")).resolve("mysql")) ||
-                                          Files.exists(binDirectory.resolve(dataDirectory.toString().replace(":", "")).resolve("performance_schema"));
+            BinaryManager.setupMariaDB(configDirectory, binDirectory);
+            
+            // Initialize data directory if needed (mysql_install_db)
+            Path dataDir = binDirectory.resolve("data");
+            if (!Files.exists(dataDir) || isDataDirEmpty(dataDir)) {
+                LOGGER.info("Initializing MariaDB data directory...");
+                Files.createDirectories(dataDir);
+                
+                String installDbDataBinary = OSUtils.isWindows() ? "mysql_install_db.exe" : "mariadb-install-db";
+                Path installDbPath = binDirectory.resolve("bin/" + installDbDataBinary);
+                
+                // Fallback: Check older names vs newer names
+                if (!Files.exists(installDbPath) && OSUtils.isLinux()) {
+                     // Try scripts/mysql_install_db
+                     installDbPath = binDirectory.resolve("scripts/mysql_install_db");
+                     if (!Files.exists(installDbPath)) {
+                         // Try bin/mysql_install_db
+                         installDbPath = binDirectory.resolve("bin/mysql_install_db");
+                     }
+                }
+                
+                if (!Files.exists(installDbPath)) {
+                    throw new IOException("Could not find install DB binary. Checked: " + installDbDataBinary);
+                }
 
-            if (databaseAlreadyExists) {
-                LOGGER.info("MariaDB data files already exist - skipping installation");
-                return;
+                List<String> command = new ArrayList<>();
+                command.add(installDbPath.toAbsolutePath().toString());
+                command.add("--datadir=" + dataDir.toAbsolutePath().toString());
+                
+                // CRITICAL: Explicitly set basedir so it can find plugins (InnoDB) and share (english messages)
+                // The binDirectory acts as the "root" of extraction
+                command.add("--basedir=" + binDirectory.toAbsolutePath().toString());
+                
+                // Redirect error to allow debugging
+                // command.add("--log-error=" + binDirectory.resolve("install_error.log").toString());
+
+                ProcessBuilder pb = new ProcessBuilder(command);
+                pb.directory(binDirectory.toFile());
+                
+                LOGGER.info("Running installation command: " + String.join(" ", command));
+
+                Process process = pb.start();
+                ProcessUtils.logProcessOutput(process, "MariaDB-Install");
+                
+                int exitCode = process.waitFor();
+                if (exitCode != 0) {
+                    LOGGER.error("MariaDB init failed with exit code: " + exitCode);
+                    // Cleanup failed install to prevent corruption issues on retry
+                    LOGGER.warn("Cleaning up corrupt data directory...");
+                    try {
+                        Files.walk(dataDir)
+                            .sorted((a, b) -> b.compareTo(a)) // Delete leaves first
+                            .forEach(p -> {
+                                try { Files.delete(p); } catch (IOException ignored) {}
+                            });
+                    } catch (Exception ex) {
+                        LOGGER.error("Failed to cleanup data dir", ex);
+                    }
+                    throw new IOException("MariaDB failed to initialize data directory");
+                } else {
+                    LOGGER.info("MariaDB data initialized successfully!");
+                }
             }
-
-            // Copy binary from resources
-            copyBinaryFromResources();
-
-            // Ensure data directory exists before running installation
-            try {
-                Files.createDirectories(dataDirectory);
-                LOGGER.info("Created data directory at: " + dataDirectory);
-
-                // Create the path structure that mariadb-install-db expects
-                // It seems to append the datadir path to the working directory
-                Path expectedPath = binDirectory.resolve(dataDirectory.toString().replace(":", ""));
-                Files.createDirectories(expectedPath);
-                LOGGER.info("Created expected path structure at: " + expectedPath);
-
-            } catch (IOException e) {
-                LOGGER.error("Failed to create data directory", e);
-                throw new RuntimeException("Failed to create data directory", e);
-            }
-
-            // Run installation command
-            runInstallationCommand();
-
-            LOGGER.info("MariaDB installed successfully");
-        } catch (Exception e) {
+            
+        } catch (IOException | InterruptedException e) {
             LOGGER.error("Failed to install MariaDB", e);
+        }
+    }
+    
+    private boolean isDataDirEmpty(Path dataDir) {
+        try (java.util.stream.Stream<Path> entries = Files.list(dataDir)) {
+            return !entries.findAny().isPresent();
+        } catch (IOException e) {
+            return true;
         }
     }
 
     @Override
     public void startDatabase() {
+        if (isDatabaseRunning()) {
+            LOGGER.warn("MariaDB is already running");
+            return;
+        }
+
         try {
-            ProcessBuilder processBuilder = new ProcessBuilder(
-                binDirectory.resolve("mysqld" + OSUtils.getBinarySuffix()).toString(),
-                "--console",
-                "--port=" + config.getMariadb().getPort(),
-                "--datadir=" + dataDirectory.toString()
-            );
+            LOGGER.info("Starting MariaDB...");
 
+            // Determine binary name
+            String binaryName = OSUtils.getExecutableName("mysqld");
+            Path binaryPath = binDirectory.resolve("bin").resolve(binaryName);
+            
+            // Linux Fallback: newer versions use 'mariadbd'
+            if (!Files.exists(binaryPath) && OSUtils.isLinux()) {
+                 binaryPath = binDirectory.resolve("bin/mariadbd");
+            }
+
+            if (!Files.exists(binaryPath)) {
+                 LOGGER.error("Could not find MariaDB binary at {}", binaryPath);
+                 return;
+            }
+
+            List<String> command = new ArrayList<>();
+            command.add(binaryPath.toAbsolutePath().toString());
+            command.add("--no-defaults");
+            command.add("--console");
+            command.add("--port=" + config.getMariadb().getPort());
+            command.add("--datadir=" + binDirectory.resolve("data").toAbsolutePath().toString());
+            
+            // Only add basedir if strictly necessary or on Windows to avoid path issues
+            // command.add("--basedir=" + binDirectory.toAbsolutePath().toString());
+
+            ProcessBuilder processBuilder = new ProcessBuilder(command);
             processBuilder.directory(binDirectory.toFile());
-            databaseProcess = processBuilder.start();
 
-            // Log process output
+            databaseProcess = processBuilder.start();
             ProcessUtils.logProcessOutput(databaseProcess, "MariaDB");
 
             // MariaDB is a long-running process, so we can't wait for it to complete
@@ -150,22 +213,36 @@ public class MariaDBManager implements DatabaseManager {
     @Override
     public void stopDatabase() {
         try {
-            ProcessBuilder processBuilder = new ProcessBuilder(
-                binDirectory.resolve("mysqladmin" + OSUtils.getBinarySuffix()).toString(),
-                "shutdown",
-                "--user=" + config.getMariadb().getUsername(),
-                "--password=" + config.getMariadb().getPassword(),
-                "--port=" + config.getMariadb().getPort()
-            );
-
-            processBuilder.directory(binDirectory.toFile());
-            Process shutdownProcess = processBuilder.start();
-
-            // Wait for shutdown to complete
-            if (shutdownProcess.waitFor(10, TimeUnit.SECONDS)) {
-                LOGGER.info("MariaDB stopped successfully");
+            String adminBinary = OSUtils.getExecutableName("mysqladmin");
+            Path adminPath = binDirectory.resolve("bin").resolve(adminBinary);
+            
+            // Linux fallback: check for mariadb-admin
+            if (!Files.exists(adminPath) && OSUtils.isLinux()) {
+                adminPath = binDirectory.resolve("bin/mariadb-admin");
+            }
+            
+            if (!Files.exists(adminPath)) {
+                LOGGER.error("Could not find MariaDB admin binary. Tried: {} and mariadb-admin", adminBinary);
+                // Don't return, as we still want to try forcibly killing the process in the finally block
             } else {
-                LOGGER.error("MariaDB shutdown timed out");
+                ProcessBuilder processBuilder = new ProcessBuilder(
+                    adminPath.toAbsolutePath().toString(),
+                    "shutdown",
+                    "--user=" + config.getMariadb().getUsername(),
+                    "--password=" + config.getMariadb().getPassword(),
+                    "--port=" + config.getMariadb().getPort()
+                    // "--socket=..." might be needed on Linux if we used unix sockets, but we use TCP
+                );
+    
+                processBuilder.directory(binDirectory.toFile());
+                Process shutdownProcess = processBuilder.start();
+    
+                // Wait for shutdown to complete
+                if (shutdownProcess.waitFor(10, TimeUnit.SECONDS)) {
+                    LOGGER.info("MariaDB stopped successfully");
+                } else {
+                    LOGGER.error("MariaDB shutdown timed out");
+                }
             }
         } catch (IOException | InterruptedException e) {
             LOGGER.error("Failed to stop MariaDB", e);
@@ -191,84 +268,7 @@ public class MariaDBManager implements DatabaseManager {
 
     @Override
     public boolean isDatabaseRunning() {
-        if (databaseProcess != null) {
-            return databaseProcess.isAlive();
-        }
-        return false;
-    }
-
-    private void copyBinaryFromResources() throws IOException {
-        // Check if binary already exists
-        if (Files.exists(binDirectory.resolve("mysqld" + OSUtils.getBinarySuffix()))) {
-            LOGGER.info("MariaDB binary already copied");
-            return;
-        }
-
-        String binaryName = "mariadb-" + getMariaDBVersion() + "-" + OSUtils.getOSName() + ".zip";
-        Path sourcePath = FabricLoader.getInstance().getModContainer("dbwrapper")
-                .orElseThrow(() -> new RuntimeException("Mod container not found"))
-                .findPath("assets/dbwrapper/" + binaryName)
-                .orElseThrow(() -> new RuntimeException("Binary not found in resources: " + binaryName));
-
-        Path targetPath = configDirectory.resolve(binaryName);
-
-        Files.copy(sourcePath, targetPath, StandardCopyOption.REPLACE_EXISTING);
-
-        // Extract zip file
-        try {
-            // Use Java's built-in ZIP functionality
-            // Extract all files to the bin directory since the ZIP contains files at root level
-            try (java.util.zip.ZipFile zipFile = new java.util.zip.ZipFile(targetPath.toFile())) {
-                java.util.Enumeration<? extends java.util.zip.ZipEntry> entries = zipFile.entries();
-                while (entries.hasMoreElements()) {
-                    java.util.zip.ZipEntry entry = entries.nextElement();
-
-                    // Skip directories, extract all files to bin directory
-                    if (!entry.isDirectory()) {
-                        Path entryPath = binDirectory.resolve(entry.getName());
-                        Files.createDirectories(entryPath.getParent());
-                        try (java.io.InputStream inputStream = zipFile.getInputStream(entry)) {
-                            Files.copy(inputStream, entryPath, StandardCopyOption.REPLACE_EXISTING);
-                        }
-                    }
-                }
-            }
-            LOGGER.info("MariaDB binary copied and extracted successfully");
-        } catch (Exception e) {
-            LOGGER.error("Failed to extract MariaDB binary", e);
-            throw new IOException("Failed to extract MariaDB binary", e);
-        }
-    }
-
-    private void runInstallationCommand() throws IOException, InterruptedException {
-        ProcessBuilder processBuilder = new ProcessBuilder(
-            binDirectory.resolve("mariadb-install-db" + OSUtils.getBinarySuffix()).toString(),
-            "--datadir=" + dataDirectory.toString(),
-            "--password=" + config.getMariadb().getPassword()
-        );
-
-        processBuilder.directory(binDirectory.toFile());
-        Process installProcess = processBuilder.start();
-
-        // Log process output
-        ProcessUtils.logProcessOutput(installProcess, "MariaDB Install");
-
-        boolean completed = installProcess.waitFor(60, TimeUnit.SECONDS);
-        if (completed) {
-            int exitCode = installProcess.exitValue();
-            if (exitCode == 0) {
-                LOGGER.info("MariaDB installation command completed successfully");
-            } else {
-                throw new RuntimeException("MariaDB installation failed with exit code: " + exitCode);
-            }
-        } else {
-            throw new RuntimeException("MariaDB installation timed out");
-        }
-    }
-
-    private String getMariaDBVersion() {
-        // TODO: Make this configurable
-        return "12.1.2";
+        return databaseProcess != null && databaseProcess.isAlive();
     }
 
     @Override

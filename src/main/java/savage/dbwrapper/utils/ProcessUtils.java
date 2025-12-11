@@ -19,7 +19,9 @@ public class ProcessUtils {
                     LOGGER.info("[" + processName + "] " + line);
                 }
             } catch (IOException e) {
-                LOGGER.error("Error reading output from " + processName, e);
+                if (!"Stream closed".equals(e.getMessage())) {
+                    LOGGER.error("Error reading output from " + processName, e);
+                }
             }
         }).start();
 
@@ -30,7 +32,9 @@ public class ProcessUtils {
                     LOGGER.error("[" + processName + " ERROR] " + line);
                 }
             } catch (IOException e) {
-                LOGGER.error("Error reading error output from " + processName, e);
+                if (!"Stream closed".equals(e.getMessage())) {
+                    LOGGER.error("Error reading error output from " + processName, e);
+                }
             }
         }).start();
     }
