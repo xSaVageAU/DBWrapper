@@ -1,5 +1,7 @@
 package savage.dbwrapper;
 
+import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import savage.dbwrapper.commands.DBWrapperCommands;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
 import net.fabricmc.loader.api.FabricLoader;
@@ -38,6 +40,11 @@ public class DBWrapper implements ModInitializer, PreLaunchEntrypoint {
 
 		// Initialize configuration
 		loadConfiguration();
+
+		// Register commands
+		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+			DBWrapperCommands.register(dispatcher, config);
+		});
 
 		// Initialize database manager based on config
 		if (config.getMariadb().isEnabled()) {
@@ -82,6 +89,7 @@ public class DBWrapper implements ModInitializer, PreLaunchEntrypoint {
 		// Register server lifecycle events
 		registerServerEvents();
 	}
+
 
 	@Override
 	public void onPreLaunch() {
