@@ -114,6 +114,9 @@ public class DBWrapperConfig {
         @SerializedName("password")
         private String password = "";
 
+        @SerializedName("max_connections")
+        private int maxConnections = 50;
+
         public boolean isEnabled() {
             return enabled;
         }
@@ -136,6 +139,14 @@ public class DBWrapperConfig {
 
         public void setPassword(String password) {
             this.password = password;
+        }
+
+        public int getMaxConnections() {
+            return maxConnections;
+        }
+
+        public void setMaxConnections(int maxConnections) {
+            this.maxConnections = maxConnections;
         }
 
         public boolean hasPassword() {

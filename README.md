@@ -14,7 +14,11 @@ A Minecraft Fabric mod that provides a wrapper for running and managing embedded
 
 - **MariaDB** (Primary implementation)
 - **PostgreSQL** (Planned)
-- **Redis** (Supported, but disabled by default)
+- **Redis** (Lightweight Java Implementation)
+  - **Note**: This is *not* a native Redis binary. It is a lightweight, pure-Java implementation of the Redis protocol embedded directly in the mod.
+  - **Capabilities**: Supports Pub/Sub and ephemeral Key-Value storage (cache).
+  - **Limitations**: **Data is NOT persistent** (lost on restart). Does not support complex Redis types (Lists, Hashes, Sets) or advanced commands (Lua scripts, Clustering).
+  - **Use Case**: Best used for cross-server messaging (Pub/Sub) and temporary caching.
 
 ## Installation
 

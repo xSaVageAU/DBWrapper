@@ -80,7 +80,12 @@ public class RedisManager implements DatabaseManager {
             LOGGER.info("Starting Redis server on port {}", config.getRedis().getPort());
 
             // Start simple Redis server
-            simpleRedisServer = new SimpleRedisServer(config.getRedis().getPort(), config.getRedis().getPassword(), dataDirectory);
+            simpleRedisServer = new SimpleRedisServer(
+                config.getRedis().getPort(), 
+                config.getRedis().getPassword(), 
+                dataDirectory,
+                config.getRedis().getMaxConnections()
+            );
             simpleRedisServer.start();
 
             // Create client connection

@@ -8,13 +8,12 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Path;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 
 /**
  * Simple Redis-like server implementation using pure Java
  * Supports basic Redis protocol commands
+ * In-memory only (stateless), but with Thread Safety.
  */
 public class SimpleRedisServer {
     private static final Logger LOGGER = LoggerFactory.getLogger(SimpleRedisServer.class);
@@ -22,13 +21,16 @@ public class SimpleRedisServer {
     private final int port;
     private final String password;
     private final Path dataDirectory;
+    private final int maxConnections;
+    
     private ServerSocket serverSocket;
     private ExecutorService executorService;
+    private ScheduledExecutorService scheduledTaskService;
     private volatile boolean running = false;
 
-    // Simple in-memory data store
-    private final Map<String, String> dataStore = new HashMap<>();
-    private final Map<String, Long> expirationTimes = new HashMap<>();
+    // Data stores (In-Memory Only)
+    private final Map<String, String> dataStore = new ConcurrentHashMap<>();
+    private final Map<String, Long> expirationTimes = new ConcurrentHashMap<>();
 
     // Pub/Sub support
     private final Map<String, List<ClientConnection>> channelSubscriptions = new ConcurrentHashMap<>();
@@ -50,21 +52,50 @@ public class SimpleRedisServer {
         }
     }
 
-    public SimpleRedisServer(int port, String password, Path dataDirectory) {
+    public SimpleRedisServer(int port, String password, Path dataDirectory, int maxConnections) {
         this.port = port;
         this.password = password;
         this.dataDirectory = dataDirectory;
+        this.maxConnections = maxConnections;
     }
 
     public void start() throws IOException {
         serverSocket = new ServerSocket(port);
-        executorService = Executors.newCachedThreadPool();
+        // Fix: Limit threads to prevent OOM/DoS
+        executorService = Executors.newFixedThreadPool(maxConnections);
+        
+        // Background tasks (Cleanup only)
+        scheduledTaskService = Executors.newSingleThreadScheduledExecutor();
+        
         running = true;
 
-        LOGGER.info("Simple Redis server started on port {}", port);
+        // Schedule expiration cleanup (every 10 seconds)
+        scheduledTaskService.scheduleAtFixedRate(this::cleanupExpiredKeys, 
+            10, 10, TimeUnit.SECONDS);
+
+        LOGGER.info("Simple Redis server started on port {} (Max connections: {})", port, maxConnections);
 
         // Start client handler thread
-        new Thread(this::acceptConnections).start();
+        new Thread(this::acceptConnections, "Redis-Acceptor").start();
+    }
+
+    private void cleanupExpiredKeys() {
+        long now = System.currentTimeMillis();
+        Iterator<Map.Entry<String, Long>> it = expirationTimes.entrySet().iterator();
+        int removedCount = 0;
+        
+        while (it.hasNext()) {
+            Map.Entry<String, Long> entry = it.next();
+            if (now > entry.getValue()) {
+                dataStore.remove(entry.getKey());
+                it.remove();
+                removedCount++;
+            }
+        }
+        
+        if (removedCount > 0) {
+            LOGGER.debug("Cleaned up {} expired keys", removedCount);
+        }
     }
 
     private void acceptConnections() {
@@ -73,7 +104,13 @@ public class SimpleRedisServer {
                 try {
                     Socket clientSocket = serverSocket.accept();
                     String clientId = "client-" + (++clientCounter);
-                    executorService.submit(() -> handleClient(clientSocket, clientId));
+                    
+                    try {
+                        executorService.submit(() -> handleClient(clientSocket, clientId));
+                    } catch (RejectedExecutionException e) {
+                        LOGGER.warn("Max connections reached, rejecting client {}", clientId);
+                        clientSocket.close();
+                    }
                 } catch (IOException e) {
                     if (running) {
                         LOGGER.error("Error accepting client connection", e);
@@ -129,10 +166,12 @@ public class SimpleRedisServer {
                 }
             }
         } catch (Exception e) {
-            LOGGER.error("Error handling client", e);
+            // Normal disconnection
         } finally {
             // Clean up client connection
             clientConnections.remove(clientId);
+            authenticatedClients.remove(clientId);
+            
             // Remove from all channel subscriptions
             for (List<ClientConnection> subscribers : channelSubscriptions.values()) {
                 subscribers.remove(clientConn);
@@ -182,6 +221,13 @@ public class SimpleRedisServer {
                     writer.write("+PONG\r\n");
                     writer.flush();
                     break;
+                
+                // Persistence commands removed as per request
+                case "SAVE":
+                case "BGSAVE":
+                    writer.write("-ERR persistence not supported in this mode\r\n");
+                    writer.flush();
+                    break;
 
                 case "SET":
                     if (commands.length >= 3) {
@@ -193,6 +239,9 @@ public class SimpleRedisServer {
                         if (commands.length >= 5 && "PX".equalsIgnoreCase(commands[3])) {
                             long ttl = Long.parseLong(commands[4]);
                             expirationTimes.put(key, System.currentTimeMillis() + ttl);
+                        } else {
+                             // Remove any existing expiration if simple SET is used
+                             expirationTimes.remove(key);
                         }
 
                         writer.write("+OK\r\n");
@@ -206,16 +255,16 @@ public class SimpleRedisServer {
                 case "GET":
                     if (commands.length >= 2) {
                         String key = commands[1];
-                        String value = dataStore.get(key);
-
-                        // Check expiration
-                        if (value != null && expirationTimes.containsKey(key)) {
+                        
+                        // Check expiration first
+                        if (expirationTimes.containsKey(key)) {
                             if (System.currentTimeMillis() > expirationTimes.get(key)) {
                                 dataStore.remove(key);
                                 expirationTimes.remove(key);
-                                value = null;
                             }
                         }
+                        
+                        String value = dataStore.get(key);
 
                         if (value != null) {
                             writer.write("$" + value.length() + "\r\n");
@@ -272,8 +321,30 @@ public class SimpleRedisServer {
                     break;
 
                 case "KEYS":
-                    writer.write("*0\r\n"); // Empty array - no keys pattern support for simplicity
-                    writer.flush();
+                     // Basic implementation for KEYS * (use with caution)
+                     if (commands.length >= 2) {
+                        String pattern = commands[1];
+                        // Only support * for now
+                        if ("*".equals(pattern)) {
+                            Set<String> keys = new HashSet<>(dataStore.keySet());
+                            // Filter expired
+                            long now = System.currentTimeMillis();
+                            keys.removeIf(k -> expirationTimes.containsKey(k) && now > expirationTimes.get(k));
+                            
+                            writer.write("*" + keys.size() + "\r\n");
+                            for (String k : keys) {
+                                writer.write("$" + k.length() + "\r\n");
+                                writer.write(k + "\r\n");
+                            }
+                            writer.flush();
+                        } else {
+                             writer.write("*0\r\n"); // No pattern support yet
+                             writer.flush();
+                        }
+                     } else {
+                        writer.write("-ERR wrong number of arguments for 'keys' command\r\n");
+                        writer.flush();
+                     }
                     break;
 
                 case "SUBSCRIBE":
@@ -311,9 +382,8 @@ public class SimpleRedisServer {
 
                         if (subscribers != null) {
                             // Send message to all subscribers
-                            for (ClientConnection subscriber : subscribers) {
+                            for (ClientConnection subscriber : new ArrayList<>(subscribers)) {
                                 try {
-                                    // Send Redis pub/sub message format: *3\r\n$7\r\nmessage\r\n$[channel_len]\r\n[channel]\r\n$[message_len]\r\n[message]\r\n
                                     subscriber.writer.write("*3\r\n");
                                     subscriber.writer.write("$7\r\n");
                                     subscriber.writer.write("message\r\n");
@@ -324,7 +394,6 @@ public class SimpleRedisServer {
                                     subscriber.writer.flush();
                                     recipientCount++;
                                 } catch (IOException e) {
-                                    LOGGER.warn("Failed to send message to subscriber {}, removing from subscriptions", subscriber.clientId);
                                     // Remove failed subscriber
                                     subscribers.remove(subscriber);
                                 }
@@ -334,7 +403,6 @@ public class SimpleRedisServer {
                         // Respond with number of recipients
                         writer.write(":" + recipientCount + "\r\n");
                         writer.flush();
-                        LOGGER.info("Published message to channel {}: {} (sent to {} clients)", channel, message, recipientCount);
                     } else {
                         writer.write("-ERR wrong number of arguments for 'publish' command\r\n");
                         writer.flush();
@@ -344,7 +412,6 @@ public class SimpleRedisServer {
                 case "UNSUBSCRIBE":
                     ClientConnection clientConn = clientConnections.get(clientId);
                     if (commands.length >= 2) {
-                        // Unsubscribe from specific channel
                         String channel = commands[1];
                         List<ClientConnection> subscribers = channelSubscriptions.get(channel);
                         if (subscribers != null) {
@@ -360,11 +427,9 @@ public class SimpleRedisServer {
                         writer.write("unsubscribe\r\n");
                         writer.write("$" + channel.length() + "\r\n");
                         writer.write(channel + "\r\n");
-                        writer.write(":" + clientConn.subscriptions.size() + "\r\n"); // Remaining subscriptions
+                        writer.write(":" + clientConn.subscriptions.size() + "\r\n"); 
                         writer.flush();
-                        LOGGER.info("Client {} unsubscribed from channel: {}", clientId, channel);
                     } else {
-                        // Unsubscribe from all channels
                         for (String channel : new HashSet<>(clientConn.subscriptions)) {
                             List<ClientConnection> subscribers = channelSubscriptions.get(channel);
                             if (subscribers != null) {
@@ -384,7 +449,6 @@ public class SimpleRedisServer {
                         writer.write("\r\n");
                         writer.write(":" + remainingSubs + "\r\n");
                         writer.flush();
-                        LOGGER.info("Client {} unsubscribed from all channels", clientId);
                     }
                     break;
 
@@ -407,6 +471,10 @@ public class SimpleRedisServer {
             }
         } catch (IOException e) {
             LOGGER.error("Error closing server socket", e);
+        }
+
+        if (scheduledTaskService != null) {
+            scheduledTaskService.shutdownNow();
         }
 
         if (executorService != null) {

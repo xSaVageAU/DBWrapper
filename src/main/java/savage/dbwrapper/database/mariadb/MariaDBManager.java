@@ -113,11 +113,38 @@ public class MariaDBManager implements DatabaseManager {
             ProcessUtils.logProcessOutput(databaseProcess, "MariaDB");
 
             // MariaDB is a long-running process, so we can't wait for it to complete
-            // Instead, we'll consider it started immediately and let it run
-            LOGGER.info("MariaDB started successfully on port {}", config.getMariadb().getPort());
+            // Instead, we'll consider it started immediately and let it run, BUT we will wait for it to accept connections
+            LOGGER.info("MariaDB process started. Waiting for connection...");
+            
+            if (waitForReady()) {
+                LOGGER.info("MariaDB started successfully on port {}", config.getMariadb().getPort());
+            } else {
+                LOGGER.error("MariaDB failed to start (timeout exceeded)");
+                stopDatabase();
+            }
         } catch (IOException e) {
             LOGGER.error("Failed to start MariaDB", e);
         }
+    }
+    
+    private boolean waitForReady() {
+        long startTime = System.currentTimeMillis();
+        long timeout = 20000; // 20 seconds
+        
+        while (System.currentTimeMillis() - startTime < timeout) {
+            try (java.net.Socket ignored = new java.net.Socket("localhost", config.getMariadb().getPort())) {
+                return true;
+            } catch (IOException e) {
+                // Wait and retry
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException ex) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 
     @Override

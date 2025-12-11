@@ -30,6 +30,8 @@ public class DBWrapper implements ModInitializer, PreLaunchEntrypoint {
 	private static final Path CONFIG_FILE = CONFIG_DIRECTORY.resolve("config.json");
 	private static boolean shutdownHookRegistered = false;
 
+	public static volatile boolean isDatabaseReady = false;
+
 	@Override
 	public void onInitialize() {
 		// This code runs as soon as Minecraft is in a mod-load-ready state.
@@ -46,45 +48,65 @@ public class DBWrapper implements ModInitializer, PreLaunchEntrypoint {
 			DBWrapperCommands.register(dispatcher, config, LOGGER);
 		});
 
-		// Initialize database manager based on config
-		if (config.getMariadb().isEnabled()) {
-			databaseManager = new MariaDBManager();
-			((MariaDBManager) databaseManager).setConfig(config);
-			databaseManager.initialize();
+		// Initialize and start databases in a background thread to avoid blocking the main thread
+		Thread startupThread = new Thread(() -> {
+			LOGGER.info("Starting DBWrapper services in background...");
+			try {
+				// Initialize database manager based on config
+				if (config.getMariadb().isEnabled()) {
+					databaseManager = new MariaDBManager();
+					((MariaDBManager) databaseManager).setConfig(config);
+					databaseManager.initialize();
 
-			// Register shutdown hook for proper cleanup
-			if (!shutdownHookRegistered) {
-				Runtime.getRuntime().addShutdownHook(new Thread(() -> {
-					LOGGER.info("Shutdown hook triggered - cleaning up database processes");
-					if (databaseManager != null && databaseManager.isDatabaseRunning()) {
-						try {
-							databaseManager.stopDatabase();
-						} catch (Exception e) {
-							LOGGER.error("Error during shutdown hook database cleanup", e);
-						}
+					// Register shutdown hook for proper cleanup
+					if (!shutdownHookRegistered) {
+						Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+							LOGGER.info("Shutdown hook triggered - cleaning up database processes");
+							if (databaseManager != null && databaseManager.isDatabaseRunning()) {
+								try {
+									databaseManager.stopDatabase();
+								} catch (Exception e) {
+									LOGGER.error("Error during shutdown hook database cleanup", e);
+								}
+							}
+						}));
+						shutdownHookRegistered = true;
 					}
-				}));
-				shutdownHookRegistered = true;
-			}
 
-			if (config.isAutoStart()) {
-				startDatabaseServices();
-			}
-		}
+					if (config.isAutoStart()) {
+						startDatabaseServices();
+					}
+				}
 
-		if (config.getRedis().isEnabled()) {
-			// Create separate Redis manager
-			RedisManager redisManager = new RedisManager();
-			redisManager.setConfig(config);
-			redisManager.initialize();
+				if (config.getRedis().isEnabled()) {
+					// Create separate Redis manager
+					RedisManager redisManager = new RedisManager();
+					redisManager.setConfig(config);
+					redisManager.initialize();
 
-			// Start Redis if auto-start is enabled
-			if (config.isAutoStart()) {
-				LOGGER.info("Starting Redis database...");
-				redisManager.installDatabase();
-				redisManager.startDatabase();
+					// Start Redis if auto-start is enabled
+					if (config.isAutoStart()) {
+						LOGGER.info("Starting Redis database...");
+						redisManager.installDatabase();
+						redisManager.startDatabase();
+					}
+				}
+				
+				isDatabaseReady = true;
+				LOGGER.info("DBWrapper services started successfully!");
+				
+			} catch (Exception e) {
+				LOGGER.error("Failed to start DBWrapper services", e);
+				isDatabaseReady = false; // Ensure it stays false
 			}
-		}
+		}, "DBWrapper-Startup");
+		
+		startupThread.setDaemon(true); // Allow JVM to exit if this is the only thread left (though we want it to finish)
+		// Actually, we probably don't want it to be daemon if it's doing critical setup, 
+		// but we don't want it to hold up shutdown if it hangs.
+		// Let's keep it non-daemon for safety of installation, but main server loop will proceed anyway.
+		startupThread.setDaemon(false); 
+		startupThread.start();
 
 		// Register server lifecycle events
 		registerServerEvents();
