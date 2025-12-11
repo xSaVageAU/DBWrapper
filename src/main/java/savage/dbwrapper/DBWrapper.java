@@ -43,7 +43,7 @@ public class DBWrapper implements ModInitializer, PreLaunchEntrypoint {
 
 		// Register commands
 		CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
-			DBWrapperCommands.register(dispatcher, config);
+			DBWrapperCommands.register(dispatcher, config, LOGGER);
 		});
 
 		// Initialize database manager based on config
