@@ -24,9 +24,11 @@ public class BinaryManager {
     // URL for Linux binary (provided by user)
     private static final String LINUX_DOWNLOAD_URL = "https://dlm.mariadb.com/4516810/MariaDB/mariadb-12.1.2/bintar-linux-systemd-x86_64/mariadb-12.1.2-linux-systemd-x86_64.tar.gz";
 
+    private static final String WINDOWS_DOWNLOAD_URL = "https://dlm.mariadb.com/4516816/MariaDB/mariadb-12.1.2/winx64-packages/mariadb-12.1.2-winx64.zip";
+
     public static void setupMariaDB(Path configDir, Path binDir) throws IOException {
         if (OSUtils.isWindows()) {
-            setupWindows(configDir, binDir);
+            setupWindows(binDir);
         } else if (OSUtils.isLinux()) {
             setupLinux(binDir);
         } else {
@@ -34,39 +36,41 @@ public class BinaryManager {
         }
     }
 
-    private static void setupWindows(Path configDir, Path binDir) throws IOException {
+    private static void setupWindows(Path binDir) throws IOException {
         Path exePath = binDir.resolve("bin/mysqld.exe");
         if (Files.exists(exePath)) {
             LOGGER.info("MariaDB binaries already exist.");
             return;
         }
 
-        LOGGER.info("Extracting MariaDB binaries for Windows...");
-        
-        // Ensure directory exists
+        LOGGER.info("Downloading MariaDB binaries for Windows...");
         Files.createDirectories(binDir);
 
-        // Copy zip from resources
-        String zipName = "mariadb-winx64.zip";
-        Path zipPath = configDir.resolve(zipName);
-        
-        try (InputStream in = BinaryManager.class.getResourceAsStream("/" + zipName)) {
-            if (in == null) {
-                throw new IOException("Could not find " + zipName + " in resources!");
-            }
-            Files.copy(in, zipPath, StandardCopyOption.REPLACE_EXISTING);
-        }
+        Path zipPath = binDir.resolve("mariadb.zip");
+        downloadFile(WINDOWS_DOWNLOAD_URL, zipPath);
 
-        // Extract zip
+        LOGGER.info("Download complete. Extracting...");
+
+        // Extract zip, stripping the top-level directory
         try (ZipInputStream zipIn = new ZipInputStream(Files.newInputStream(zipPath))) {
             ZipEntry entry = zipIn.getNextEntry();
             while (entry != null) {
-                Path filePath = binDir.resolve(entry.getName());
-                if (!entry.isDirectory()) {
-                    Files.createDirectories(filePath.getParent());
-                    Files.copy(zipIn, filePath, StandardCopyOption.REPLACE_EXISTING);
-                } else {
-                    Files.createDirectories(filePath);
+                // Logic to strip top level dir: assume "mariadb-x.y.z/" is first component
+                String name = entry.getName();
+                int slashIndex = name.indexOf('/');
+                if (slashIndex == -1) slashIndex = name.indexOf('\\');
+                
+                if (slashIndex != -1 && slashIndex + 1 < name.length()) {
+                    // Remove the top level directory from path
+                    String strippedName = name.substring(slashIndex + 1);
+                    Path filePath = binDir.resolve(strippedName);
+                    
+                    if (!entry.isDirectory()) {
+                        Files.createDirectories(filePath.getParent());
+                        Files.copy(zipIn, filePath, StandardCopyOption.REPLACE_EXISTING);
+                    } else {
+                        Files.createDirectories(filePath);
+                    }
                 }
                 zipIn.closeEntry();
                 entry = zipIn.getNextEntry();
@@ -75,7 +79,7 @@ public class BinaryManager {
         
         // Clean up zip
         Files.deleteIfExists(zipPath);
-        LOGGER.info("MariaDB binaries extracted successfully.");
+        LOGGER.info("MariaDB binaries installed successfully.");
     }
 
     private static void setupLinux(Path binDir) throws IOException {
@@ -89,16 +93,8 @@ public class BinaryManager {
         Files.createDirectories(binDir);
         
         Path tarPath = binDir.resolve("mariadb.tar.gz");
+        downloadFile(LINUX_DOWNLOAD_URL, tarPath);
         
-        // Download
-        try (BufferedInputStream in = new BufferedInputStream(new URL(LINUX_DOWNLOAD_URL).openStream());
-             FileOutputStream fileOutputStream = new FileOutputStream(tarPath.toFile())) {
-            byte[] dataBuffer = new byte[1024];
-            int bytesRead;
-            while ((bytesRead = in.read(dataBuffer, 0, 1024)) != -1) {
-                fileOutputStream.write(dataBuffer, 0, bytesRead);
-            }
-        }
         LOGGER.info("Download complete. Extracting...");
         
         // Extract using system tar
@@ -136,6 +132,44 @@ public class BinaryManager {
         setExecutable(binDir.resolve("bin/mariadb-admin")); // Newer name for shutdown
         
         LOGGER.info("MariaDB binaries installed successfully.");
+    }
+    
+    private static void downloadFile(String urlStr, Path targetPath) throws IOException {
+        java.net.HttpURLConnection connection = (java.net.HttpURLConnection) new URL(urlStr).openConnection();
+        long fileSize = connection.getContentLengthLong();
+        
+        try (BufferedInputStream in = new BufferedInputStream(connection.getInputStream());
+             FileOutputStream fileOutputStream = new FileOutputStream(targetPath.toFile())) {
+            
+            byte[] dataBuffer = new byte[8192];
+            int bytesRead;
+            long totalBytesRead = 0;
+            long lastLogTime = System.currentTimeMillis();
+            long totalMB = fileSize / (1024 * 1024);
+            
+            LOGGER.info("Starting download. Total size: {} MB", totalMB > 0 ? totalMB : "Unknown");
+
+            while ((bytesRead = in.read(dataBuffer, 0, 8192)) != -1) {
+                fileOutputStream.write(dataBuffer, 0, bytesRead);
+                totalBytesRead += bytesRead;
+                
+                long currentTime = System.currentTimeMillis();
+                if (currentTime - lastLogTime > 3000) {
+                   String progressInfo;
+                   double currentMB = totalBytesRead / (1024.0 * 1024.0);
+                   
+                   if (fileSize > 0) {
+                       int percent = (int) ((totalBytesRead * 100) / fileSize);
+                       progressInfo = String.format("%.2f MB / %d MB (%d%%)", currentMB, totalMB, percent);
+                   } else {
+                       progressInfo = String.format("%.2f MB", currentMB);
+                   }
+                   
+                   LOGGER.info("Downloading binaries: {}", progressInfo);
+                   lastLogTime = currentTime;
+                }
+            }
+        }
     }
     
     private static void setExecutable(Path path) {

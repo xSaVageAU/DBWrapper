@@ -89,7 +89,10 @@ public class MariaDBManager implements DatabaseManager {
                 
                 // CRITICAL: Explicitly set basedir so it can find plugins (InnoDB) and share (english messages)
                 // The binDirectory acts as the "root" of extraction
-                command.add("--basedir=" + binDirectory.toAbsolutePath().toString());
+                // On Windows, mysql_install_db.exe does not support --basedir and finds things relative to itself
+                if (!OSUtils.isWindows()) {
+                    command.add("--basedir=" + binDirectory.toAbsolutePath().toString());
+                }
                 
                 // Redirect error to allow debugging
                 // command.add("--log-error=" + binDirectory.resolve("install_error.log").toString());
@@ -181,6 +184,7 @@ public class MariaDBManager implements DatabaseManager {
             
             if (waitForReady()) {
                 LOGGER.info("MariaDB started successfully on port {}", config.getMariadb().getPort());
+                secureDatabase();
             } else {
                 LOGGER.error("MariaDB failed to start (timeout exceeded)");
                 stopDatabase();
@@ -190,11 +194,41 @@ public class MariaDBManager implements DatabaseManager {
         }
     }
     
+    private void secureDatabase() {
+        String url = "jdbc:mariadb://localhost:" + config.getMariadb().getPort() + "/";
+        String username = "root";
+        String password = config.getMariadb().getPassword();
+        
+        // 1. Try connecting with configured password (happy path)
+        try (java.sql.Connection conn = java.sql.DriverManager.getConnection(url, username, password)) {
+            LOGGER.info("MariaDB already secured with configured password.");
+            return;
+        } catch (java.sql.SQLException ignored) {
+            // Password mismatch? Try empty password (fresh install)
+        }
+        
+        // 2. Try connecting with no password
+        try (java.sql.Connection conn = java.sql.DriverManager.getConnection(url, username, "")) {
+            LOGGER.info("Detected fresh MariaDB install. Securing root account...");
+            
+            try (java.sql.Statement stmt = conn.createStatement()) {
+                // Set the password for root
+                // Use 'Access Denied' safe query
+                stmt.execute("ALTER USER 'root'@'localhost' IDENTIFIED BY '" + password + "'");
+                stmt.execute("FLUSH PRIVILEGES");
+                LOGGER.info("Successfully secured MariaDB root account!");
+            }
+        } catch (java.sql.SQLException e) {
+            LOGGER.error("Failed to secure MariaDB. Could not connect with config password OR empty password.", e);
+        }
+    }
+
     private boolean waitForReady() {
         long startTime = System.currentTimeMillis();
         long timeout = 20000; // 20 seconds
         
         while (System.currentTimeMillis() - startTime < timeout) {
+            // Use JDBC to check readiness instead of raw socket, simpler usage of existing libs
             try (java.net.Socket ignored = new java.net.Socket("localhost", config.getMariadb().getPort())) {
                 return true;
             } catch (IOException e) {

@@ -106,7 +106,7 @@ public class DBWrapperConfig {
 
     public static class RedisConfig {
         @SerializedName("enabled")
-        private boolean enabled = false;
+        private boolean enabled = true;
 
         @SerializedName("port")
         private int port = 6379;
