@@ -52,7 +52,7 @@ public class DBWrapperConfig {
         private boolean enabled = true;
 
         @SerializedName("port")
-        private int port = 3307;
+        private int port = 3306;
 
         @SerializedName("username")
         private String username = "root";
@@ -106,7 +106,7 @@ public class DBWrapperConfig {
 
     public static class RedisConfig {
         @SerializedName("enabled")
-        private boolean enabled = true;
+        private boolean enabled = false;
 
         @SerializedName("port")
         private int port = 6379;
