@@ -9,6 +9,9 @@ import net.minecraft.text.Text;
 import org.slf4j.Logger;
 import savage.dbwrapper.config.DBWrapperConfig;
 
+import net.minecraft.command.permission.Permission;
+import net.minecraft.command.permission.PermissionLevel;
+
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
@@ -17,7 +20,7 @@ import java.sql.Statement;
 public class DBWrapperCommands {
     public static void register(CommandDispatcher<ServerCommandSource> dispatcher, DBWrapperConfig config, Logger logger) {
         dispatcher.register(CommandManager.literal("dbwrapper")
-                .requires(source -> source.hasPermissionLevel(4))
+                .requires(source -> source.getPermissions().hasPermission(new Permission.Level(PermissionLevel.fromLevel(4))))
                 .then(CommandManager.literal("database")
                         .then(CommandManager.literal("mariadb")
                                 .then(CommandManager.literal("create")
